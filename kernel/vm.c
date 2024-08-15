@@ -10,9 +10,10 @@
  * the kernel's page table.
  */
 pagetable_t kernel_pagetable;
-extern pte_t* walk(pagetable_t, uint64, int);
+
 extern char etext[];  // kernel.ld sets this to end of kernel code.
 
+extern pte_t* walk(pagetable_t, uint64, int);
 extern char trampoline[]; // trampoline.S
 
 // Make a direct-map page table for the kernel.
@@ -303,27 +304,25 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  // char *mem;
-
-  for(i = 0; i < sz; i += PGSIZE){
+  
+  for(i = 0; i < sz; i += PGSIZE)
+  {
     if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
-    *pte=((*pte)&(~PTE_W))|PTE_COW;
-    pa = PTE2PA(*pte);
+
+    *pte = ((*pte) & (~PTE_W)) | PTE_COW; 
     flags = PTE_FLAGS(*pte);
-    // if((mem = kalloc()) == 0)
-    //   goto err;
-    // memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, pa, flags) != 0){
-      // kfree(mem);
+    pa = PTE2PA(*pte);  
+
+    if(mappages(new, i, PGSIZE, pa, flags) != 0) {
       goto err;
     }
-    add_kmem_ref((void*)pa);
+    kadd_ref((void*)pa);
   }
   return 0;
-
+ 
  err:
   uvmunmap(new, 0, i / PGSIZE, 1);
   return -1;
@@ -349,9 +348,10 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
-  pte_t *pte;
-
-  while(len > 0){
+  pte_t* pte;    // add
+ 
+  while(len > 0)
+  {
     va0 = PGROUNDDOWN(dstva);
     if(va0 >= MAXVA)  
       return -1;
@@ -359,34 +359,32 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
       return -1;
     if (((*pte & PTE_V) == 0) || ((*pte & PTE_U)) == 0) 
       return -1;
-    
     pa0 = PTE2PA(*pte);
-    if (((*pte & PTE_W) == 0) && (*pte & PTE_COW))
+    if(((*pte & PTE_W) == 0) && (*pte & PTE_COW)) 
     {
-      acquire_ref_lock();
-      if (get_kmem_ref((void*)pa0) == 1) 
+      acquire_ref();
+      if(kget_ref((void*)pa0) == 1) 
       {
-          *pte = (*pte | PTE_W) & (~PTE_COW);
-      }
-      else 
-      {
+        *pte = (*pte | PTE_W) & (~PTE_COW);       
+      } else {        
         char* mem = kalloc();
-        if (mem == 0)
+        if(mem == 0) 
         {
-          release_ref_lock();
+          printf("copyout(): memery alloc fault\n");
+          release_ref();
           return -1;
         }
-        memmove(mem, (char*)pa0, PGSIZE);
-        uint new_flags = (PTE_FLAGS(*pte) | PTE_COW) & (~PTE_W);
-        if (mappages(pagetable, va0, PGSIZE, (uint64)mem, new_flags) != 0)
-        {
+        memmove(mem, (void*)pa0, PGSIZE);
+        uint newflags = (PTE_FLAGS(*pte) & (~PTE_COW)) | PTE_W;
+        if(mappages(pagetable, va0, PGSIZE, (uint64)mem, newflags) != 0)
+         {
           kfree(mem);
-          release_ref_lock();
+          release_ref();
           return -1;
-        }
-        kfree((void*)pa0);
       }
-      release_ref_lock();
+      kfree((void*)pa0);
+      }    
+      release_ref();
     }
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)
@@ -395,7 +393,7 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     if(n > len)
       n = len;
     memmove((void *)(pa0 + (dstva - va0)), src, n);
-
+ 
     len -= n;
     src += n;
     dstva = va0 + PGSIZE;

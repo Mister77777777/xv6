@@ -9,6 +9,8 @@
 struct spinlock tickslock;
 uint ticks;
 extern pte_t* walk(pagetable_t, uint64, int);
+
+
 extern char trampoline[], uservec[], userret[];
 
 // in kernelvec.S, calls kerneltrap().
@@ -62,57 +64,67 @@ usertrap(void)
 
     // an interrupt will change sstatus &c registers,
     // so don't enable until done with those registers.
+     
     intr_on();
-
+ 
     syscall();
-  }else if (r_scause() == 15) 
-  { // write page fault
+  } else if(r_scause() == 15) 
+  { 
     uint64 va = PGROUNDDOWN(r_stval());
     pte_t *pte;
-    if (va > p->sz || (pte = walk(p->pagetable, va, 0)) == 0)
-    {
+    if(va >= MAXVA) 
+    { 
+      printf("va is larger than MAXVA!\n");
       p->killed = 1;
       goto end;
     }
-
-    if (((*pte) & PTE_COW) == 0 || ((*pte) & PTE_V) == 0 || ((*pte) & PTE_U) == 0)
-    {
+    if(va > p->sz)
+    { 
+      printf("va is larger than sz!\n");
       p->killed = 1;
       goto end;
     }
-
+    if((pte = walk(p->pagetable, va, 0)) == 0)
+    {
+      printf("usertrap(): page not found\n");
+      p->killed=1;
+      goto end;
+    } 
+    if(((*pte) & PTE_COW) == 0 ||((*pte) & PTE_V) == 0 || ((*pte) & PTE_U) == 0) 
+    {
+      printf("usertrap: pte not exist or it's not cow page\n");
+      p->killed = 1;
+      goto end;
+    }
     uint64 pa = PTE2PA(*pte);
-    acquire_ref_lock();
-    uint ref = get_kmem_ref((void*)pa);
-    if (ref == 1)
-    {
+    acquire_ref();
+    uint ref = kget_ref((void*)pa);
+    if(ref == 1)
+    { 
       *pte = ((*pte) & (~PTE_COW)) | PTE_W;
-    }
-    else
-    {
+    } else { 
       char* mem = kalloc();
-      if (mem == 0)
+      if(mem == 0) 
       {
+        printf("usertrap(): memery alloc fault\n");
         p->killed = 1;
-        release_ref_lock();
+        release_ref();
         goto end;
       }
-
       memmove(mem, (char*)pa, PGSIZE);
       uint flag = (PTE_FLAGS(*pte) | PTE_W) & (~PTE_COW);
-      if (mappages(p->pagetable, va, PGSIZE, (uint64)mem,flag) != 0)
+      if(mappages(p->pagetable, va, PGSIZE, (uint64)mem, flag) != 0) 
       {
         kfree(mem);
+        printf("usertrap(): can not map page\n");
         p->killed = 1;
-        release_ref_lock();
+        release_ref();
         goto end;
       }
-      kfree((void*)pa);
+      kfree((void*)pa); 
     }
-    release_ref_lock();
-  }
-  else if((which_dev = devintr()) != 0)
-  {
+    release_ref();
+  } else if((which_dev = devintr()) != 0){
     // ok
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);

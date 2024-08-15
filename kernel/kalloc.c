@@ -9,8 +9,6 @@
 #include "riscv.h"
 #include "defs.h"
 
-#define INDEX(pa) (((char*)pa - (char*)PGROUNDUP((uint64)end)) >> 12)
-
 void freerange(void *pa_start, void *pa_end);
 
 extern char end[]; // first address after kernel.
@@ -23,33 +21,40 @@ struct run {
 struct {
   struct spinlock lock;
   struct run *freelist;
-  struct spinlock ref_lock;
+  struct spinlock reflock;
   uint *ref_count;
 } kmem;
-
+ 
 void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
-  initlock(&kmem.ref_lock, "ref");
-  uint64 physical_pages = ((PHYSTOP - (uint64)end) >> 12) + 1;
-  physical_pages = ((physical_pages * sizeof(uint)) >> 12) + 1;
-  kmem.ref_count = (uint*) end;
-  uint64 offset = physical_pages << 12;
-  freerange(end + offset, (void*)PHYSTOP);
+  initlock(&kmem.reflock,"kmemref");
+  uint64 rc_pages = ((PHYSTOP - (uint64)end) >> 12) +1; 
+  rc_pages = ((rc_pages * sizeof(uint)) >> 12) + 1;
+  kmem.ref_count = (uint*)end;
+  uint64 rc_offset = rc_pages << 12;  
+  freerange(end + rc_offset, (void*)PHYSTOP);
 }
-
+ 
+inline int
+kgetrefindex(void *pa)
+{
+   return ((char*)pa - (char*)PGROUNDUP((uint64)end)) >> 12;
+}
+ 
 void
 freerange(void *pa_start, void *pa_end)
 {
   char *p;
   p = (char*)PGROUNDUP((uint64)pa_start);
-  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
+  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE) 
   {
-    kmem.ref_count[INDEX((void*)p)] = 1;
+    kmem.ref_count[kgetrefindex((void *)p)] = 1;
     kfree(p);
   }
 }
+
 
 // Free the page of physical memory pointed at by v,
 // which normally should have been returned by a
@@ -64,12 +69,13 @@ kfree(void *pa)
     panic("kfree");
 
   acquire(&kmem.lock);
-  if(--kmem.ref_count[INDEX(pa)])
+  if(--kmem.ref_count[kgetrefindex(pa)])
   {
     release(&kmem.lock);
     return;
   }
   release(&kmem.lock);
+
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
 
@@ -94,7 +100,7 @@ kalloc(void)
   if(r)
   {
     kmem.freelist = r->next;
-    kmem.ref_count[INDEX((void*)r)] = 1;
+    kmem.ref_count[kgetrefindex((void*)r)]=1;
   }
   release(&kmem.lock);
 
@@ -102,22 +108,26 @@ kalloc(void)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
 }
-int get_kmem_ref(void *pa)
+int
+kget_ref(void *pa)
 {
-  return kmem.ref_count[INDEX(pa)];
+  return kmem.ref_count[kgetrefindex(pa)];
 }
  
-void add_kmem_ref(void *pa)
+void
+kadd_ref(void *pa)
 {
-  kmem.ref_count[INDEX(pa)]++;
+  kmem.ref_count[kgetrefindex(pa)]++;
 }
  
-void acquire_ref_lock()
+inline void
+acquire_ref()
 {
-  acquire(&kmem.ref_lock);
+  acquire(&kmem.reflock);
 }
  
-void release_ref_lock()
+inline void
+release_ref()
 {
-  release(&kmem.ref_lock);
+  release(&kmem.reflock);
 }
